@@ -18,7 +18,6 @@ public class SenderWorker implements Runnable {
     this.doneLatch = doneLatch;
   }
 
-
   @Override
   public void run() {
     try {

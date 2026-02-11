@@ -41,7 +41,7 @@ public class HealthController extends HttpServlet {
     if (!isUrlValid(urlPath)) {
       logger.warning("Invalid URL: " + urlPath);
       res.setStatus(HttpServletResponse.SC_BAD_REQUEST);
-      ErrorResponse error = new ErrorResponse("INVALID_URL", "invalid url");
+      ErrorResponse error = new ErrorResponse("INVALID_URL", "invalid url", null);
       error.setServerTimestamp(java.time.Instant.now().toString());
       res.getWriter().write(GSON.toJson(error));
       return;

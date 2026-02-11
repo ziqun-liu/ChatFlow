@@ -1,40 +1,104 @@
 package cs6650.ziqunliu.chatflow.client;
 
-import static cs6650.ziqunliu.chatflow.client.model.ChatMessage.POISON;
-
-import cs6650.ziqunliu.chatflow.client.generator.MessageGenerator;
 import cs6650.ziqunliu.chatflow.client.model.ChatMessage;
 import cs6650.ziqunliu.chatflow.client.metrics.Metrics;
-import cs6650.ziqunliu.chatflow.client.worker.SenderWorker;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
+import cs6650.ziqunliu.chatflow.client.model.MessageType;
+import cs6650.ziqunliu.chatflow.client.websocket.ClientWebSocketEndpoint;
+import cs6650.ziqunliu.chatflow.client.websocket.ConnectionManager;
+import java.io.IOException;
+import java.net.URI;
+import java.time.Instant;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 public class ClientMain {
+
 
   private static final int WARMUP_THREADS = 32;
   private static final int WARMUP_MSG_PER_THREAD = 1000;
 
-  private static final int TOTAL_MESSAGES = 500_000;
-  private static final int QUEUE_CAPACITY = 20_000;
-
   private static final int NUM_SENDERS = 32;
 
+  private static final int POOL_SIZE = 20;
+  private static final String WS_URI = "ws://34.229.12.201:8080/server/ws/chat";
+
+
   public static void main(String[] args) throws Exception {
-    runWarmup();
-    runMainPhase();
+
+    Metrics metrics = new Metrics();
+    ConnectionManager manager = new ConnectionManager(WS_URI, POOL_SIZE, metrics);
+
+    manager.connectAll();
+    if (!manager.awaitAllOpen(10, TimeUnit.SECONDS)) {
+      manager.closeAll();
+      throw new RuntimeException("Connections timeout");
+    }
+
+    metrics.start();
+
+    // 40 messages
+    for (int i = 0; i < 40; i++) {
+      int roomId = (i % POOL_SIZE) + 1;
+
+      ChatMessage msg = new ChatMessage(007, "user007", "Message from 007", roomId,
+          MessageType.TEXT.name(), Instant.now().toString());
+
+      try {
+        manager.sendMessage(msg);
+      } catch (IOException e) {
+      }
+    }
+
+    metrics.stop();
+
+    manager.closeAll();
+
+    System.out.println(metrics.summary(""));
+
+    /* Minimum viable loop
+    // Instantiate ClientWebSocketEndpoint
+    ClientWebSocketEndpoint endpoint = new ClientWebSocketEndpoint(metrics, wsUri);
+
+    // 1. connect
+    endpoint.connect();
+
+    // 2. await onOpen
+    endpoint.awaitOpen(1, TimeUnit.SECONDS);
+
+    metrics.start();
+    for (int i = 0; i < 5; i++) {
+      metrics.incSendAttempts();
+      endpoint.sendText(msg.toJson());
+      metrics.incSuccess();
+      Thread.sleep(200);
+    }
+    metrics.stop();
+
+    Thread.sleep(500);
+
+    // 4. close
+    endpoint.close();
+
+    System.out.println(metrics.summary("MINIMAL LOOP"));
   }
 
+     */
+
+  /*
+  // Warmup
   private static void runWarmup() throws InterruptedException {
     Metrics warmupMetrics = new Metrics();
     CountDownLatch warmupLatch = new CountDownLatch(WARMUP_THREADS);
 
     warmupMetrics.start();
 
-    for (int i=0; i<WARMUP_THREADS; i++) {
+    for (int i = 0; i < WARMUP_THREADS; i++) {
       Thread t = new Thread(() -> {
         try {
-          for (int k=0; k<WARMUP_MSG_PER_THREAD; k++) {
+          for (int k = 0; k < WARMUP_MSG_PER_THREAD; k++) {
             warmupMetrics.incSendAttempts();
             warmupMetrics.incSuccess();
           }
@@ -53,10 +117,12 @@ public class ClientMain {
     long expected = (long) WARMUP_THREADS * WARMUP_MSG_PER_THREAD;
     long processes = warmupMetrics.getTotalProcessed();
     if (processes != expected) {
-      System.out.println("WARMUP WARNING: total processed = " + processes + ", expected = " + expected);
+      System.out.println(
+          "WARMUP WARNING: total processed = " + processes + ", expected = " + expected);
     }
   }
 
+  // Main phase
   private static void runMainPhase() throws InterruptedException {
     Metrics metrics = new Metrics();
 
@@ -106,9 +172,11 @@ public class ClientMain {
     // 9. Verify
     long processed = metrics.getTotalProcessed();
     if (processed != TOTAL_MESSAGES) {
-      System.out.println("MAIN WARNING: total processed = " + processed + ", total expected = " + TOTAL_MESSAGES);
+      System.out.println(
+          "MAIN WARNING: total processed = " + processed + ", total expected = " + TOTAL_MESSAGES);
     }
   }
+  */
 
-
+  }
 }

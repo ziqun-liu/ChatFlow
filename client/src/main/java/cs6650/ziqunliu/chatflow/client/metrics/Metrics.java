@@ -50,19 +50,19 @@ public class Metrics {
     return connectionsCreated.get();
   }
 
-  public Long getReconnections() {
+  public long getReconnections() {
     return reconnections.get();
   }
 
-  public Long getSendAttempts() {
+  public long getSendAttempts() {
     return sendAttempts.get();
   }
 
-  public Long getFail() {
+  public long getFail() {
     return fail.get();
   }
 
-  public Long getSuccess() {
+  public long getSuccess() {
     return success.get();
   }
 

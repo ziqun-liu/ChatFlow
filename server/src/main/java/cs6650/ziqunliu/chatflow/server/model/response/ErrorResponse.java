@@ -3,14 +3,24 @@ package cs6650.ziqunliu.chatflow.server.model.response;
 public class ErrorResponse {
 
   private String status;
+  private String roomId;
   private String errorCode;
   private String message;
   private String serverTimestamp;
 
-  public ErrorResponse(String errorCode, String message) {
+  public ErrorResponse(String errorCode, String message, String roomId) {
     this.status = "ERROR";
     this.errorCode = errorCode;
     this.message = message;
+    this.roomId = roomId;
+  }
+
+  public String getRoomId() {
+    return roomId;
+  }
+
+  public void setRoomId(String roomId) {
+    this.roomId = roomId;
   }
 
   public String getStatus() {

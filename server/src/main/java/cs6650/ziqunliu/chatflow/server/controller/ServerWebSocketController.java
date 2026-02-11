@@ -18,7 +18,7 @@ import cs6650.ziqunliu.chatflow.server.model.dto.ChatMessageDTO;
 import cs6650.ziqunliu.chatflow.server.model.response.ErrorResponse;
 import cs6650.ziqunliu.chatflow.server.model.event.MessageBroadcastEvent;
 
-// Test uri ws://localhost:8080/server-1.0-SNAPSHOT/ws/chat/1
+// Test uri ws://<ec2 public ip>:8080/server/ws/chat/1
 @javax.websocket.server.ServerEndpoint("/ws/chat/{roomId}")
 public class ServerWebSocketController {
 
@@ -47,7 +47,8 @@ public class ServerWebSocketController {
   }
 
   /**
-   *
+   * Accept messages from the client. Serialize JSON into dto. Validate message.
+   * Assemble broadcast event and broadcast.
    * @param message
    * @param session
    * @param roomId
@@ -62,7 +63,7 @@ public class ServerWebSocketController {
       // Serialize JSON from WebSocket connection into the model
       dto = GSON.fromJson(message, ChatMessageDTO.class);
     } catch (JsonParseException e) {
-      ErrorResponse error = new ErrorResponse("INVALID_JSON", "JSON has wrong format");
+      ErrorResponse error = new ErrorResponse("INVALID_JSON", "JSON has wrong format", roomId);
       error.setServerTimestamp(java.time.Instant.now().toString());
       session.getAsyncRemote().sendText(GSON.toJson(error));
       return;
@@ -73,7 +74,7 @@ public class ServerWebSocketController {
     // validator returns either null or an error message
     String validatorError = MessageValidationService.validate(dto);
     if (validatorError != null) {
-      ErrorResponse error = new ErrorResponse("VALIDATION_FAILED", validatorError);
+      ErrorResponse error = new ErrorResponse("VALIDATION_FAILED", validatorError, roomId);
       error.setServerTimestamp(java.time.Instant.now().toString());
       session.getAsyncRemote().sendText(GSON.toJson(error));
       return;
