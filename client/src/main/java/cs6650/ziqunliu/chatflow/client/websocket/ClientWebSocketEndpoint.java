@@ -7,8 +7,10 @@ import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import javax.websocket.ClientEndpoint;
+import javax.websocket.CloseReason;
 import javax.websocket.ContainerProvider;
 import javax.websocket.DeploymentException;
+import javax.websocket.OnClose;
 import javax.websocket.OnError;
 import javax.websocket.OnMessage;
 import javax.websocket.OnOpen;
@@ -17,17 +19,19 @@ import javax.websocket.WebSocketContainer;
 
 
 /**
- * Each instance represents a WebSocket session. A session is a room.
+ * Each instance represents a WebSocket connection session.
  */
 @ClientEndpoint
 public class ClientWebSocketEndpoint {
 
+  private static final WebSocketContainer SHARED_CONTAINER = ContainerProvider.getWebSocketContainer();
+
+  private final Object connectLock = new Object();
   public Metrics metrics;
   public URI serverUri;
   public volatile Session session;
   public CountDownLatch openLatch = new CountDownLatch(1);
 
-  private final Object connectLock = new Object();
 
   public ClientWebSocketEndpoint(Metrics metrics, URI serverUri) {
     this.metrics = metrics;
@@ -40,9 +44,8 @@ public class ClientWebSocketEndpoint {
       // Every reconnection instantiates a new CountDownLatch
       this.openLatch = new CountDownLatch(1);
 
-      WebSocketContainer container = ContainerProvider.getWebSocketContainer();
       try {
-        container.connectToServer(this, serverUri);
+        SHARED_CONTAINER.connectToServer(this, serverUri);
       } catch (DeploymentException e) {
         throw new IOException(e);
       }
@@ -75,6 +78,7 @@ public class ClientWebSocketEndpoint {
   @OnOpen
   public void onOpen(Session session) {
     this.session = session;
+    this.session.setMaxIdleTimeout(0);
     this.openLatch.countDown();
     this.metrics.incConnectionsCreated();
   }
@@ -86,5 +90,20 @@ public class ClientWebSocketEndpoint {
 
   @OnError
   public void onError(Session session, Throwable throwable) {
+//    System.err.println("ws error: " + throwable.getClass().getSimpleName() + ": "
+//        + throwable.getMessage());
+//    synchronized (connectLock) {
+//      if (this.session == null || !this.session.isOpen()) {
+//        try {
+//          connect();
+//        } catch (IOException ignored) {
+//        }
+//      }
+//    }
+  }
+
+  @OnClose
+  public void onClose(Session session, CloseReason closeReason) {
+    this.session = null;
   }
 }

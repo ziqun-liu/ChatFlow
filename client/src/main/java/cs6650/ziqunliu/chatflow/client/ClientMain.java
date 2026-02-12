@@ -1,13 +1,19 @@
 package cs6650.ziqunliu.chatflow.client;
 
+import cs6650.ziqunliu.chatflow.client.generator.MessageGenerator;
 import cs6650.ziqunliu.chatflow.client.model.ChatMessage;
 import cs6650.ziqunliu.chatflow.client.metrics.Metrics;
 import cs6650.ziqunliu.chatflow.client.model.MessageType;
 import cs6650.ziqunliu.chatflow.client.websocket.ClientWebSocketEndpoint;
 import cs6650.ziqunliu.chatflow.client.websocket.ConnectionManager;
+import cs6650.ziqunliu.chatflow.client.worker.Producer;
+import cs6650.ziqunliu.chatflow.client.worker.SenderWorker;
 import java.io.IOException;
 import java.net.URI;
 import java.time.Instant;
+import java.time.chrono.MinguoEra;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -16,167 +22,153 @@ import java.util.concurrent.TimeUnit;
 
 public class ClientMain {
 
-
   private static final int WARMUP_THREADS = 32;
   private static final int WARMUP_MSG_PER_THREAD = 1000;
 
+  private static final int TOTAL_MESSAGES = 500_000;
   private static final int NUM_SENDERS = 32;
+  private static final int QUEUE_CAPACITY = 20_000;
 
-  private static final int POOL_SIZE = 20;
-  private static final String WS_URI = "ws://34.229.12.201:8080/server/ws/chat";
-
+  private static final int POOL_SIZE = 20;  // number of connection sessions
+  public static final int NUM_ROOMS = 20;
+  private static final String WS_URI = "ws://3.84.125.88:8080/server/ws/chat";
 
   public static void main(String[] args) throws Exception {
-
-    Metrics metrics = new Metrics();
-    ConnectionManager manager = new ConnectionManager(WS_URI, POOL_SIZE, metrics);
-
-    manager.connectAll();
-    if (!manager.awaitAllOpen(10, TimeUnit.SECONDS)) {
-      manager.closeAll();
-      throw new RuntimeException("Connections timeout");
-    }
-
-    metrics.start();
-
-    // 40 messages
-    for (int i = 0; i < 40; i++) {
-      int roomId = (i % POOL_SIZE) + 1;
-
-      ChatMessage msg = new ChatMessage(007, "user007", "Message from 007", roomId,
-          MessageType.TEXT.name(), Instant.now().toString());
-
-      try {
-        manager.sendMessage(msg);
-      } catch (IOException e) {
-      }
-    }
-
-    metrics.stop();
-
-    manager.closeAll();
-
-    System.out.println(metrics.summary(""));
-
-    /* Minimum viable loop
-    // Instantiate ClientWebSocketEndpoint
-    ClientWebSocketEndpoint endpoint = new ClientWebSocketEndpoint(metrics, wsUri);
-
-    // 1. connect
-    endpoint.connect();
-
-    // 2. await onOpen
-    endpoint.awaitOpen(1, TimeUnit.SECONDS);
-
-    metrics.start();
-    for (int i = 0; i < 5; i++) {
-      metrics.incSendAttempts();
-      endpoint.sendText(msg.toJson());
-      metrics.incSuccess();
-      Thread.sleep(200);
-    }
-    metrics.stop();
-
-    Thread.sleep(500);
-
-    // 4. close
-    endpoint.close();
-
-    System.out.println(metrics.summary("MINIMAL LOOP"));
+    // java.util.logging.Logger.getLogger("org.glassfish.tyrus").setLevel(java.util.logging.Level.OFF);
+    runWarmup();
+    runMainPhase();
   }
 
-     */
-
-  /*
-  // Warmup
   private static void runWarmup() throws InterruptedException {
+
     Metrics warmupMetrics = new Metrics();
-    CountDownLatch warmupLatch = new CountDownLatch(WARMUP_THREADS);
+
+    // Create a 32-thread thread pool
+    ExecutorService warmupPool = Executors.newFixedThreadPool(WARMUP_THREADS);
+    CountDownLatch doneLatch = new CountDownLatch(WARMUP_THREADS);
 
     warmupMetrics.start();
 
-    for (int i = 0; i < WARMUP_THREADS; i++) {
-      Thread t = new Thread(() -> {
+    // For each thread, submit a task to queue for execute
+    for (int t = 0; t < WARMUP_THREADS; t++) {
+
+      final int threadId = t;
+
+      Runnable task = () -> {
+        int roomId = (threadId % NUM_ROOMS) + 1;  // Route 32 threads to 20 rooms
+
+        // Each thread establishes one WebSocket connection
+        ConnectionManager manager = new ConnectionManager(WS_URI + "/" + roomId, 1, warmupMetrics);
+
         try {
-          for (int k = 0; k < WARMUP_MSG_PER_THREAD; k++) {
-            warmupMetrics.incSendAttempts();
-            warmupMetrics.incSuccess();
+          manager.connectAll();
+          if (!manager.awaitAllOpen(10, TimeUnit.SECONDS)) {
+            System.err.println(
+                "warmup awaitAllOpen timeout: thread=" + threadId + ", room=" + roomId);
+            return;
           }
+
+          for (int i = 0; i < WARMUP_MSG_PER_THREAD; i++) {
+            ChatMessage msg = MessageGenerator.next();
+            msg = new ChatMessage(msg.getUserId(), msg.getUsername(), msg.getMessage(), roomId,
+                msg.getMessageType(), msg.getTimestamp());
+
+            try {
+              manager.sendMessage(msg);
+            } catch (IOException ignored) {
+            }
+          }
+
+        } catch (Exception e) {
+          System.err.println(
+              "warmup exception: thread=" + threadId + ", room=" + roomId + ", error="
+                  + e.getClass().getSimpleName() + ": " + e.getMessage());
+
         } finally {
-          warmupLatch.countDown();
+          manager.closeAll();
+          doneLatch.countDown();
         }
-      }, "warmup_thread-" + i);
+      };
 
-      t.start();
-    }  // End for loop
-
-    warmupLatch.await();
-    warmupMetrics.stop();
-    System.out.println(warmupMetrics.summary("WARMUP"));
-
-    long expected = (long) WARMUP_THREADS * WARMUP_MSG_PER_THREAD;
-    long processes = warmupMetrics.getTotalProcessed();
-    if (processes != expected) {
-      System.out.println(
-          "WARMUP WARNING: total processed = " + processes + ", expected = " + expected);
+      warmupPool.submit(task);
     }
+
+    doneLatch.await();
+    warmupMetrics.stop();
+
+    warmupPool.shutdownNow();
+    warmupPool.awaitTermination(5, TimeUnit.SECONDS);
+    System.out.println(warmupMetrics.summary("WARMUP"));
   }
 
-  // Main phase
   private static void runMainPhase() throws InterruptedException {
     Metrics metrics = new Metrics();
-
-    // 1. Queue with bound
-    BlockingQueue<ChatMessage> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
-
-    // 2. Start sender threads
-    CountDownLatch doneLatch = new CountDownLatch(NUM_SENDERS);
-    Thread[] workers = new Thread[NUM_SENDERS];
-    for (int i = 0; i < NUM_SENDERS; i++) {
-      workers[i] = new Thread(new SenderWorker(queue, POISON, metrics, doneLatch), "sender-" + i);
-      workers[i].start();
-    }
-
-    // 3. Start metrics
     metrics.start();
 
-    // 4. Start producer threads
-    MessageGenerator generator = new MessageGenerator();
-    Thread producer = new Thread(() -> {
-      try {
-        for (int i = 0; i < TOTAL_MESSAGES; i++) {
-          ChatMessage msg = generator.next();
-          queue.put(msg);
-        }
-        // 5. Send poison pill after producer finishes
-        for (int i = 0; i < NUM_SENDERS; i++) {
-          queue.put(POISON);
-        }
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-      }
-    }, "producer");
+    // Create rooms and connections
+    final ConnectionManager[] managers;
+    try {
+      managers = initManagers(metrics);
+    } catch (Exception e) {
+      throw new RuntimeException("initManagers failed: " + e.getMessage(), e);
+    }
 
+    final BlockingQueue<ChatMessage> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
+
+    ExecutorService senderPool = Executors.newFixedThreadPool(NUM_SENDERS);
+    CountDownLatch sendersDoneLatch = new CountDownLatch(NUM_SENDERS);
+
+    // 1. Start consumer SenderWorkers. senderPool blocks at take() until producer puts messages.
+    for (int i = 0; i < NUM_SENDERS; i++) {
+      senderPool.submit(new SenderWorker(i, queue, managers, metrics, sendersDoneLatch));
+    }
+
+    // 2. Start the producer. Producer uses single dedicated thread generates all messages.
+    Thread producer = new Thread(new Producer(queue, TOTAL_MESSAGES, NUM_SENDERS), "producer");
     producer.start();
 
-    // 6. Wait for producer to finish
+    // The main thread waits for producer to finish.
     producer.join();
+    // Waits for senders to exit
+    sendersDoneLatch.await();
 
-    // 7. Wait for all sender threads to exit
-    doneLatch.await();
-
-    // 8. stop metrics and output
-    metrics.stop();
-    System.out.println(metrics.summary("MAIN"));
-
-    // 9. Verify
-    long processed = metrics.getTotalProcessed();
-    if (processed != TOTAL_MESSAGES) {
-      System.out.println(
-          "MAIN WARNING: total processed = " + processed + ", total expected = " + TOTAL_MESSAGES);
+    // Close 20 rooms and their connections
+    for (int roomId = 1; roomId <= NUM_ROOMS; roomId++) {
+      managers[roomId].closeAll();
     }
-  }
-  */
 
+    metrics.stop();
+    senderPool.shutdownNow();
+    senderPool.awaitTermination(5, TimeUnit.SECONDS);
+
+    System.out.println(metrics.summary("MAIN PHASE"));
   }
+
+  /**
+   * Create a number of room managers. Connect all and await open.
+   */
+  private static ConnectionManager[] initManagers(Metrics metrics)
+      throws IOException, InterruptedException {
+    ConnectionManager[] managers = new ConnectionManager[NUM_ROOMS + 1];
+
+    // Initialize managers/rooms
+    for (int roomId = 1; roomId <= NUM_ROOMS; roomId++) {
+      managers[roomId] = new ConnectionManager(WS_URI + "/" + roomId, POOL_SIZE, metrics);
+    }
+
+    // Connect
+    for (int roomId = 1; roomId <= NUM_ROOMS; roomId++) {
+      managers[roomId].connectAll();
+    }
+
+    // Await open
+    for (int roomId = 1; roomId <= NUM_ROOMS; roomId++) {
+      if (!managers[roomId].awaitAllOpen(10, TimeUnit.SECONDS)) {
+        throw new IOException("awaitAllOpen timeout: room=" + roomId);
+      }
+    }
+
+    return managers;
+  }
+
 }

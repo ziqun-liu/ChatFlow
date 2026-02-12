@@ -8,21 +8,23 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 
 /**
- * Each Connection Manager contains `poolSize` endpoints
+ * Each Connection Manager contains `poolSize` connections that connect to one roomId
  */
 public class ConnectionManager {
 
-  private static final int MAX_RETRIES = 5;
+  private static final Integer MAX_RETRIES = 5;
   private static final long BASE_BACKOFF_MS = 100;
 
-  private final int poolSize;
-  private final String wsUri;
+  private final Integer poolSize;  // number of connections
+  private final String wsUri;  // base websocket uri, no /{roomId}
   private final List<ClientWebSocketEndpoint> endpoints = new ArrayList<>();
   private final Metrics metrics;
-
+  private final AtomicInteger rr = new AtomicInteger(0);
+  private final Integer roomId;
   private final ConcurrentLinkedQueue<ChatMessage> failedMessages = new ConcurrentLinkedQueue<>();
 
   public ConnectionManager(String wsUri, int poolSize, Metrics metrics) {
@@ -33,10 +35,12 @@ public class ConnectionManager {
     this.poolSize = poolSize;
     this.metrics = metrics;
 
-    // roomId is 1-based; store endpoint for roomId=N at index N-1
-    // poolSize is likely to be 20, and therefore endpoints have 20 elements
-    for (int roomId = 1; roomId <= poolSize; roomId++) {
-      URI uri = URI.create(wsUri + "/" + roomId);
+    int rid = Integer.parseInt(wsUri.substring(wsUri.lastIndexOf('/') + 1));
+    this.roomId = rid;
+
+    // poolSize is number of connections. Each connection
+    URI uri = URI.create(wsUri);
+    for (int connectionId = 0; connectionId < poolSize; connectionId++) {
       this.endpoints.add(new ClientWebSocketEndpoint(metrics, uri));
     }
   }
@@ -63,12 +67,7 @@ public class ConnectionManager {
   }
 
   public void sendMessage(ChatMessage chatMessage) throws IOException {
-    // Message generator roomId is 1 to 20
-    int index = chatMessage.roomId - 1;
-    if (index < 0 || index >= this.poolSize) {  // roomId out of bound check
-      this.metrics.incFail();
-      return;
-    }
+    int index = Math.floorMod(rr.getAndIncrement(), this.poolSize);
 
     long backoff = BASE_BACKOFF_MS;
 
@@ -77,7 +76,7 @@ public class ConnectionManager {
       // Count every attempt
       this.metrics.incSendAttempts();
 
-      try {  // Try to conenct and send
+      try {  // Try to connect and send
 
         ClientWebSocketEndpoint ep = this.endpoints.get(index);
 
@@ -93,7 +92,7 @@ public class ConnectionManager {
         this.metrics.incSuccess();
         return;
 
-      } catch (IOException e) {  // Exception is raised if sent failed
+      } catch (IOException | RuntimeException e) {  // Exception is raised if sent failed
 
         if (attempt == MAX_RETRIES) {  // A. Failed at the 5th time
           this.metrics.incFail();
@@ -136,13 +135,8 @@ public class ConnectionManager {
     }
   }
 
-  // 仅用于测试
-  public ClientWebSocketEndpoint getEndpoint(int roomId) {
-    int index = roomId - 1;
-    if (index < 0 || index >= this.poolSize) {
-      return null;
-    }
-    return this.endpoints.get(index);
+  public int getRoomId() {
+    return roomId;
   }
 
 }

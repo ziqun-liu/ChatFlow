@@ -32,6 +32,30 @@ public class ChatMessage {
     this.timestamp = timestamp;
   }
 
+
+  public int getUserId() {
+    return userId;
+  }
+
+  public String getUsername() {
+    return username;
+  }
+
+  public String getMessage() {
+    return message;
+  }
+
+  public int getRoomId() {
+    return roomId;
+  }
+
+  public String getMessageType() {
+    return messageType;
+  }
+
+  public String getTimestamp() {
+    return timestamp;
+  }
   public String toJson() {
     return "{" + "\"userId\":" + userId + "," + "\"username\":\"" + escape(username) + "\","
         + "\"message\":\"" + escape(message) + "\"," + "\"roomId\":" + roomId + ","

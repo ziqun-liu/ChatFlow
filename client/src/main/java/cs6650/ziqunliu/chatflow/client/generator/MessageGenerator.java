@@ -18,12 +18,15 @@ public class MessageGenerator {
       "Throughput matters.", "Warmup phase.", "Main phase.", "Connection dropped.", "Reconnected.",
       "All good.", "Room is busy.", "Room is quiet.", "Ping.", "Pong.", "Done."};
 
-  public ChatMessage next() {
+  private static final int MAX_USER_ID = 100_000;
+  private static final int MAX_ROOM_ID = 20;
+
+  public static ChatMessage next() {
     ThreadLocalRandom r = ThreadLocalRandom.current();
 
-    int userId = r.nextInt(1, 100_000 + 1);
+    int userId = r.nextInt(1, MAX_USER_ID + 1);
     String username = "user" + userId;
-    int roomId = r.nextInt(1, 20 + 1);
+    int roomId = r.nextInt(1, MAX_ROOM_ID + 1);
     String message = POOL[r.nextInt(POOL.length)];
     MessageType type = pickType(r);
     String timestamp = Instant.now().toString();
@@ -37,7 +40,7 @@ public class MessageGenerator {
    * @param r ThreadLocalRandom object
    * @return ENUM MessageType
    */
-  private MessageType pickType(ThreadLocalRandom r) {
+  private static MessageType pickType(ThreadLocalRandom r) {
     int p = r.nextInt(100);
     if (p < 90) {
       return MessageType.TEXT;
@@ -47,6 +50,4 @@ public class MessageGenerator {
     }
     return MessageType.LEAVE;
   }
-
-
 }
