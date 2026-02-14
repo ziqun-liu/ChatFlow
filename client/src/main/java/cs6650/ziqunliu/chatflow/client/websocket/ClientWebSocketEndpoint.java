@@ -90,16 +90,8 @@ public class ClientWebSocketEndpoint {
 
   @OnError
   public void onError(Session session, Throwable throwable) {
-//    System.err.println("ws error: " + throwable.getClass().getSimpleName() + ": "
-//        + throwable.getMessage());
-//    synchronized (connectLock) {
-//      if (this.session == null || !this.session.isOpen()) {
-//        try {
-//          connect();
-//        } catch (IOException ignored) {
-//        }
-//      }
-//    }
+    System.err.println("ws error [" + serverUri + "]: "
+        + throwable.getClass().getSimpleName() + ": " + throwable.getMessage());
   }
 
   @OnClose

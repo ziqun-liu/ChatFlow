@@ -95,6 +95,10 @@ public class ConnectionManager {
       } catch (IOException | RuntimeException e) {  // Exception is raised if sent failed
 
         if (attempt == MAX_RETRIES) {  // A. Failed at the 5th time
+          // Only log occasionally to avoid spam
+          if (this.metrics.getFail() % 1000 == 0) {
+            System.err.println("Failed to send message after " + MAX_RETRIES + " attempts to room " + roomId + ", total failures: " + this.metrics.getFail());
+          }
           this.metrics.incFail();
           this.failedMessages.add(chatMessage);
           return;
@@ -103,6 +107,9 @@ public class ConnectionManager {
         try {  // B. Retry with exponential backoff
           Thread.sleep(backoff);
         } catch (InterruptedException ignored) {
+          Thread.currentThread().interrupt();
+          this.metrics.incFail();
+          return;
         }
 
         backoff *= 2;
@@ -115,13 +122,16 @@ public class ConnectionManager {
       this.endpoints.get(index).connect();
       boolean opened = this.endpoints.get(index).awaitOpen(2, TimeUnit.SECONDS);
       if (!opened) {
+        System.err.println("reconnect timeout: room=" + roomId + ", endpointIndex=" + index);
         return false;
       }
 
       this.metrics.incReconnections();
       return true;
 
-    } catch (IOException ignored) {
+    } catch (IOException e) {
+      System.err.println("reconnect io error: room=" + roomId + ", endpointIndex=" + index
+          + ", msg=" + e.getMessage());
       return false;
     } catch (InterruptedException ignored) {
       Thread.currentThread().interrupt();

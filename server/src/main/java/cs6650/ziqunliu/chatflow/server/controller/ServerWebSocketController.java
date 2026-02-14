@@ -68,7 +68,7 @@ public class ServerWebSocketController {
       session.getAsyncRemote().sendText(GSON.toJson(error));
       return;
     }
-    System.out.println("Parsed DTO: " + GSON.toJson(dto));
+    // System.out.println("Parsed DTO: " + GSON.toJson(dto));
 
     // Do validation and handle error
     // validator returns either null or an error message
@@ -90,15 +90,14 @@ public class ServerWebSocketController {
         dto.getTimestamp(),
         dto.getMessageType().name());
 
-    Set<Session> sessions = roomSessions.get(roomId);
-    if (sessions == null) {
-      return;
-    }
-
+    // Assignment 1: Just echo back to sender, no broadcasting needed
+    // Use synchronous send to avoid async buffer overflow
     String payload = GSON.toJson(success);
-    for (Session s : sessions) {
-      if (s.isOpen()) {
-        s.getAsyncRemote().sendText(payload);
+    if (session.isOpen()) {
+      try {
+        session.getBasicRemote().sendText(payload);  // Synchronous send
+      } catch (IOException e) {
+        System.err.println("Failed to send response: " + e.getMessage());
       }
     }
   }

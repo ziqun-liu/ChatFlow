@@ -28,11 +28,15 @@ public class SenderWorker implements Runnable {
 
   @Override
   public void run() {
+    int messageCount = 0;
     try {
       while (true) {
         ChatMessage msg = queue.take();  // Block and wait for messages
+        
+        // Check for POISON pill
         if (msg.getRoomId() == -1) {
-          return; // poison
+          System.out.println("SenderWorker-" + workerId + ": Received POISON, processed " + messageCount + " messages. Exiting.");
+          return;
         }
 
         int roomId = msg.getRoomId();
@@ -43,12 +47,21 @@ public class SenderWorker implements Runnable {
 
         try {
           managers[roomId].sendMessage(msg);
-        } catch (IOException ignored) {
+          messageCount++;
+          
+          // Progress logging for each worker
+          if (messageCount % 10000 == 0) {
+            System.out.println("SenderWorker-" + workerId + ": Sent " + messageCount + " messages");
+          }
+        } catch (IOException e) {
+          // Already logged in ConnectionManager
         }
       }
     } catch (InterruptedException e) {
+      System.err.println("SenderWorker-" + workerId + ": Interrupted after " + messageCount + " messages");
       Thread.currentThread().interrupt();
     } finally {
+      System.out.println("SenderWorker-" + workerId + ": Finally block, calling doneLatch.countDown()");
       doneLatch.countDown();
     }
   }
