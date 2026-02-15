@@ -31,7 +31,6 @@ public class Producer implements Runnable {
         ChatMessage msg = MessageGenerator.next();
         queue.put(msg);
         
-        
         // Progress logging
         if ((i + 1) % 100000 == 0) {
           System.out.println("Producer: Generated " + (i + 1) + "/" + total + " messages");
