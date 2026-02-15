@@ -31,6 +31,10 @@ public class ClientWebSocketEndpoint {
   public URI serverUri;
   public volatile Session session;
   public CountDownLatch openLatch = new CountDownLatch(1);
+  
+  // Fields for response waiting
+  private volatile String lastResponse;
+  private volatile CountDownLatch responseLatch;
 
 
   public ClientWebSocketEndpoint(Metrics metrics, URI serverUri) {
@@ -60,10 +64,41 @@ public class ClientWebSocketEndpoint {
     if (this.session == null || !session.isOpen()) {
       throw new IOException("Session not open");
     }
+
     synchronized (this) {
       this.session.getBasicRemote().sendText(text);
     }
-    // System.out.println(text);
+  }
+
+  /**
+   * Send a message and wait for server response (ACK).
+   * @param text The message to send
+   * @param timeoutMs Timeout in milliseconds
+   * @return Server response, or null if timeout
+   */
+  public String sendAndWait(String text, long timeoutMs) throws IOException, InterruptedException {
+    if (this.session == null || !session.isOpen()) {
+      throw new IOException("Session not open");
+    }
+
+    synchronized (this) {
+      // Create a new latch for this request
+      this.responseLatch = new CountDownLatch(1);
+      this.lastResponse = null;
+      
+      // Send the message
+      this.session.getBasicRemote().sendText(text);
+      
+      // Wait for response
+      boolean received = responseLatch.await(timeoutMs, TimeUnit.MILLISECONDS);
+      
+      // Log timeout warning (only first few to avoid spam)
+      if (!received) {
+        System.err.println("[TIMEOUT] No response after " + timeoutMs + "ms for " + serverUri);
+      }
+      
+      return received ? lastResponse : null;
+    }
   }
 
   public void close() {
@@ -85,17 +120,27 @@ public class ClientWebSocketEndpoint {
 
   @OnMessage
   public void onMessage(String message) {
-    // System.out.println("recv: " + message);
+    // Store the response
+    this.lastResponse = message;
+    
+    // Release any waiting thread
+    CountDownLatch latch = this.responseLatch;
+    if (latch != null) {
+      latch.countDown();
+    }
   }
 
   @OnError
   public void onError(Session session, Throwable throwable) {
-    System.err.println("ws error [" + serverUri + "]: "
-        + throwable.getClass().getSimpleName() + ": " + throwable.getMessage());
+    System.err.println(
+        "ws error [" + serverUri + "]: " + throwable.getClass().getSimpleName() + ": "
+            + throwable.getMessage());
+    this.openLatch.countDown();
   }
 
   @OnClose
   public void onClose(Session session, CloseReason closeReason) {
     this.session = null;
+    this.openLatch.countDown();
   }
 }

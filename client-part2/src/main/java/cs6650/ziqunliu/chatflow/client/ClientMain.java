@@ -24,15 +24,12 @@ public class ClientMain {
 
   private static final int WARMUP_THREADS = 32;
   private static final int WARMUP_MSG_PER_THREAD = 1000;
-  private static final int WARMUP_CONNECT_RETRIES = 3;
-  private static final long WARMUP_RETRY_DELAY_MS = 1000;
-  private static final long WARMUP_STAGGER_DELAY_MS = 150;
 
   private static final int TOTAL_MESSAGES = 500_000;
-  private static final int NUM_SENDERS = 80;  // Reduce concurrency to test
+  private static final int NUM_SENDERS = 40;
   private static final int QUEUE_CAPACITY = 500_000;
 
-  private static final int POOL_SIZE = 1;  // connections per room
+  private static final int POOL_SIZE = 2;  // connections per room
   public static final int NUM_ROOMS = 20;
   private static final String WS_URI = "ws://54.148.180.35:8080/server/ws/chat";
 
@@ -46,92 +43,52 @@ public class ClientMain {
     System.out.println("WARMUP start ...");
     Metrics warmupMetrics = new Metrics();
 
+    // Create a 32-thread thread pool
     ExecutorService warmupPool = Executors.newFixedThreadPool(WARMUP_THREADS);
     CountDownLatch doneLatch = new CountDownLatch(WARMUP_THREADS);
 
     warmupMetrics.start();
 
-    // 错峰启动线程：每隔 150ms 启动一个
+    // For each thread, submit a task to queue for execute
     for (int t = 0; t < WARMUP_THREADS; t++) {
+
       final int threadId = t;
 
       Runnable task = () -> {
-        int roomId = (threadId % NUM_ROOMS) + 1;
+        int roomId = (threadId % NUM_ROOMS) + 1;  // Route 32 threads to 20 rooms
+
+        // Each thread establishes one WebSocket connection
         ConnectionManager manager = new ConnectionManager(WS_URI + "/" + roomId, 1, warmupMetrics);
 
-        // 连接重试：最多 3 次
-        boolean connected = false;
-        for (int attempt = 1; attempt <= WARMUP_CONNECT_RETRIES; attempt++) {
-          try {
-            System.out.println("Warmup thread-" + threadId + " connecting to room " + roomId 
-                + " (attempt " + attempt + "/" + WARMUP_CONNECT_RETRIES + ")");
-            
-            // 尝试连接
-            manager.connectAll();
-            
-            // 等待连接打开
-            if (!manager.awaitAllOpen(10, TimeUnit.SECONDS)) {
-              throw new IOException("awaitAllOpen timeout");
-            }
-            
-            // 连接成功
-            System.out.println("Warmup thread-" + threadId + " connected successfully to room " + roomId);
-            connected = true;
-            break;  // 跳出重试循环
-            
-          } catch (IOException | InterruptedException e) {
-            // 连接失败
-            System.err.println(
-                "Warmup thread-" + threadId + " connection failed (attempt " + attempt + "/" + WARMUP_CONNECT_RETRIES + "): " 
-                + e.getClass().getSimpleName() + ": " + e.getMessage()
-            );
-            
-            // 关闭所有连接
-            manager.closeAll();
-            
-            // 如果还有重试机会，等待后重试
-            if (attempt < WARMUP_CONNECT_RETRIES) {
-              try {
-                System.out.println("Warmup thread-" + threadId + " waiting " + WARMUP_RETRY_DELAY_MS + "ms before retry...");
-                Thread.sleep(WARMUP_RETRY_DELAY_MS);
-              } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                break;
-              }
-            }
-          }
-        }
-
-        // 检查是否连接成功
-        if (!connected) {
-          System.err.println("Warmup thread-" + threadId + " failed after " + WARMUP_CONNECT_RETRIES + " attempts, skipping warmup messages");
-          doneLatch.countDown();
-          return;
-        }
-
-        // 发送 warmup 消息
         try {
+          // System.out.println("Thread" + threadId);
+          manager.connectAll();
+          System.out.println("After connectAll() " + threadId);
+
+          if (!manager.awaitAllOpen(10, TimeUnit.SECONDS)) {
+            System.err.println(
+                "warmup awaitAllOpen timeout: thread=" + threadId + ", room=" + roomId);
+            return;
+          }
+
           for (int i = 0; i < WARMUP_MSG_PER_THREAD; i++) {
+            // System.out.println("Thread " + threadId + " message " + i);
             ChatMessage msg = MessageGenerator.next();
-            msg = new ChatMessage(
-                msg.getUserId(), 
-                msg.getUsername(), 
-                msg.getMessage(), 
-                roomId,
-                msg.getMessageType(), 
-                msg.getTimestamp()
-            );
+            msg = new ChatMessage(msg.getUserId(), msg.getUsername(), msg.getMessage(), roomId,
+                msg.getMessageType(), msg.getTimestamp());
 
             try {
               manager.sendMessage(msg);
             } catch (IOException ignored) {
             }
           }
+
         } catch (Exception e) {
           System.err.println(
-              "Warmup thread-" + threadId + " error during message sending: "
-              + e.getClass().getSimpleName() + ": " + e.getMessage()
-          );
+              "warmup exception: thread=" + threadId + ", room=" + roomId + ", error="
+                  + e.getClass().getSimpleName() + ": " + e.getMessage());
+          e.printStackTrace();
+
         } finally {
           manager.closeAll();
           doneLatch.countDown();
@@ -139,11 +96,6 @@ public class ClientMain {
       };
 
       warmupPool.submit(task);
-      
-      // 错峰启动：每隔 150ms 启动下一个线程
-      if (t < WARMUP_THREADS - 1) {
-        Thread.sleep(WARMUP_STAGGER_DELAY_MS);
-      }
     }
 
     doneLatch.await();
@@ -151,7 +103,6 @@ public class ClientMain {
 
     warmupPool.shutdownNow();
     warmupPool.awaitTermination(5, TimeUnit.SECONDS);
-    
     System.out.println("WARMUP done.");
     System.out.println(warmupMetrics.summary("WARMUP"));
   }
@@ -214,7 +165,15 @@ public class ClientMain {
     senderPool.shutdownNow();
     senderPool.awaitTermination(5, TimeUnit.SECONDS);
 
-    System.out.println(metrics.summary("MAIN PHASE"));
+    System.out.println(metrics.summary("MAIN PHASE, NUM_SENDERS=" + NUM_SENDERS));
+    
+    // ===== Output per-message metrics =====
+    try {
+      metrics.writeCsv("latency.csv");
+      metrics.printStatistics();
+    } catch (IOException e) {
+      System.err.println("Failed to write CSV: " + e.getMessage());
+    }
   }
 
   /**

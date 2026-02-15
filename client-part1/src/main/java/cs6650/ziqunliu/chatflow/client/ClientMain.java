@@ -26,7 +26,7 @@ public class ClientMain {
   private static final int WARMUP_MSG_PER_THREAD = 1000;
 
   private static final int TOTAL_MESSAGES = 500_000;
-  private static final int NUM_SENDERS = 200;
+  private static final int NUM_SENDERS = 120;
   private static final int QUEUE_CAPACITY = 500_000;
 
   private static final int POOL_SIZE = 5;  // connections per room

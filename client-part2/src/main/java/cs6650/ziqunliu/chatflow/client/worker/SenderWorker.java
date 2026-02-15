@@ -48,7 +48,7 @@ public class SenderWorker implements Runnable {
         try {
           managers[roomId].sendMessage(msg);
           messageCount++;
-          
+
           // Progress logging for each worker
           if (messageCount % 10000 == 0) {
             System.out.println("SenderWorker-" + workerId + ": Sent " + messageCount + " messages");

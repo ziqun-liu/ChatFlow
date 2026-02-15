@@ -1,8 +1,8 @@
 package cs6650.ziqunliu.chatflow.client.websocket;
 
-import cs6650.ziqunliu.chatflow.client.ClientMain;
 import cs6650.ziqunliu.chatflow.client.metrics.Metrics;
 import cs6650.ziqunliu.chatflow.client.model.ChatMessage;
+import cs6650.ziqunliu.chatflow.client.model.LatencyRecord;
 import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
@@ -19,6 +19,7 @@ public class ConnectionManager {
 
   private static final Integer MAX_RETRIES = 5;
   private static final long BASE_BACKOFF_MS = 100;
+  private static final long RESPONSE_TIMEOUT_MS = 2000; // 2 second timeout for server response
 
   private final Integer poolSize;  // number of connections
   private final String wsUri;  // base websocket uri, no /{roomId}
@@ -46,61 +47,10 @@ public class ConnectionManager {
     }
   }
 
-  /**
-   * Connect all endpoints with exponential backoff retry logic. Attempts to connect each endpoint
-   * up to MAX_RETRIES times.
-   *
-   * @throws IOException if all retry attempts fail for any endpoint
-   */
   public void connectAll() throws IOException {
-    for (int i = 0; i < this.endpoints.size(); i++) {
-      ClientWebSocketEndpoint ep = this.endpoints.get(i);
-      boolean connected = connectWithRetry(ep, i);
-
-      if (!connected) {
-        throw new IOException(
-            "Failed to connect endpoint " + i + " after " + MAX_RETRIES + " attempts for room "
-                + roomId);
-      }
+    for (ClientWebSocketEndpoint ep : this.endpoints) {
+      ep.connect();
     }
-  }
-
-  /**
-   * Attempt to connect a single endpoint with exponential backoff.
-   *
-   * @param ep    The endpoint to connect
-   * @param index The endpoint index (for logging)
-   * @return true if connection successful, false otherwise
-   */
-  private boolean connectWithRetry(ClientWebSocketEndpoint ep, int index) {
-    long backoff = BASE_BACKOFF_MS;
-
-    for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        ep.connect();
-        return true;  // Connection initiated successfully
-
-      } catch (IOException e) {
-        if (attempt == MAX_RETRIES) {
-          System.err.println(
-              "connectAll failed: room=" + roomId + ", endpointIndex=" + index + ", attempt="
-                  + attempt + ", error=" + e.getMessage());
-          return false;
-        }
-
-        // Exponential backoff before retry
-        try {
-          Thread.sleep(backoff);
-        } catch (InterruptedException ie) {
-          Thread.currentThread().interrupt();
-          return false;
-        }
-
-        backoff *= 2;  // 100ms, 200ms, 400ms, 800ms, 1600ms
-      }
-    }
-
-    return false;
   }
 
   public boolean awaitAllOpen(long timeout, TimeUnit unit) throws InterruptedException {
@@ -119,7 +69,12 @@ public class ConnectionManager {
   }
 
   public void sendMessage(ChatMessage chatMessage) throws IOException {
+    int index = Math.floorMod(rr.getAndIncrement(), this.poolSize);
+
     long backoff = BASE_BACKOFF_MS;
+
+    // Record initial send time
+    long sendTime = System.currentTimeMillis();
 
     // Try to connect and send at most 5 times
     for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -127,36 +82,68 @@ public class ConnectionManager {
       this.metrics.incSendAttempts();
 
       try {  // Try to connect and send
-        int startIndex = Math.floorMod(rr.getAndIncrement(), this.poolSize);
-        ClientWebSocketEndpoint ep = null;
 
-        // Graceful connection handling: try `poolSize` times and try to find an open connection
-        for (int i = 0; i < this.poolSize; i++) {
-          int index = (startIndex + i) % this.poolSize;
-          ClientWebSocketEndpoint candidate = this.endpoints.get(index);
+        ClientWebSocketEndpoint ep = this.endpoints.get(index);
 
-          if (candidate.session != null && candidate.session.isOpen()) {
-            ep = candidate;
-            break;
+        // Graceful connection handling: reconnect if disconnected
+        if (ep.session == null || !ep.session.isOpen()) {
+          boolean ok = reconnect(index);
+          if (!ok) {
+            throw new IOException("Reconnect failed");
           }
         }
 
-        if (ep == null) {
-          throw new IOException("roomId=" + this.roomId + "No open connection available");
+        // Update send time for retries
+        if (attempt > 1) {
+          sendTime = System.currentTimeMillis();
         }
 
-        ep.sendText(chatMessage.toJson());
+        // Send and wait for server response (ACK)
+        String response = ep.sendAndWait(chatMessage.toJson(), RESPONSE_TIMEOUT_MS);
+        
+        // Record ACK time immediately after receiving response
+        long ackTime = System.currentTimeMillis();
+        long latency = ackTime - sendTime;
+        
+        // Check if we got a valid response
+        if (response == null) {
+          throw new IOException("Response timeout");
+        }
+
         this.metrics.incSuccess();
+        
+        // Record successful latency
+        this.metrics.recordLatency(new LatencyRecord(
+            sendTime,
+            chatMessage.getMessageType().toString(),
+            latency,
+            "OK",
+            chatMessage.getRoomId()
+        ));
+        
         return;
 
-      } catch (IOException | RuntimeException e) {  // Exception is raised if sent failed
+      } catch (IOException | RuntimeException | InterruptedException e) {  // Exception is raised if sent failed
+        
+        // Log first failure for debugging
+        if (attempt == 1 && this.metrics.getFail() < 100) { // Only log first 100 failures
+          System.err.println("Send failed: room=" + roomId + ", attempt=" + attempt + 
+                           ", error=" + e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
 
         if (attempt == MAX_RETRIES) {  // A. Failed at the 5th time
+          // Record failed attempt with latency = -1
+          this.metrics.recordLatency(new LatencyRecord(
+              sendTime,
+              chatMessage.getMessageType().toString(),
+              -1,
+              "FAIL",
+              chatMessage.getRoomId()
+          ));
+          
           // Only log occasionally to avoid spam
           if (this.metrics.getFail() % 1000 == 0) {
-            System.err.println(
-                "Failed to send message after " + MAX_RETRIES + " attempts to room " + roomId
-                    + ", total failures: " + this.metrics.getFail());
+            System.err.println("Failed to send message after " + MAX_RETRIES + " attempts to room " + roomId + ", total failures: " + this.metrics.getFail());
           }
           this.metrics.incFail();
           this.failedMessages.add(chatMessage);
@@ -167,6 +154,16 @@ public class ConnectionManager {
           Thread.sleep(backoff);
         } catch (InterruptedException ignored) {
           Thread.currentThread().interrupt();
+          
+          // Record interrupted attempt as failure
+          this.metrics.recordLatency(new LatencyRecord(
+              sendTime,
+              chatMessage.getMessageType().toString(),
+              -1,
+              "FAIL",
+              chatMessage.getRoomId()
+          ));
+          
           this.metrics.incFail();
           return;
         }
@@ -175,39 +172,28 @@ public class ConnectionManager {
       }
     }
   }
-//
-//  private boolean reconnect(int index) {
-//    try {
-//      ClientWebSocketEndpoint ep = this.endpoints.get(index);
-//
-//      if (ep.session != null && ep.session.isOpen()) {
-//        return true;
-//      }
-//
-//      ep.close();
-//      Thread.sleep(200);
-//
-//      ep.connect();
-//      boolean opened = ep.awaitOpen(5, TimeUnit.SECONDS);
-//
-//      if (!opened) {
-//        System.err.println("reconnect timeout: room=" + roomId + ", endpointIndex=" + index);
-//        return false;
-//      }
-//
-//      this.metrics.incReconnections();
-//      return true;
-//
-//    } catch (IOException e) {
-//      System.err.println(
-//          "reconnect io error: room=" + roomId + ", endpointIndex=" + index + ", msg="
-//              + e.getMessage());
-//      return false;
-//    } catch (InterruptedException ignored) {
-//      Thread.currentThread().interrupt();
-//      return false;
-//    }
-//  }
+
+  private boolean reconnect(int index) {
+    try {
+      this.endpoints.get(index).connect();
+      boolean opened = this.endpoints.get(index).awaitOpen(2, TimeUnit.SECONDS);
+      if (!opened) {
+        System.err.println("reconnect timeout: room=" + roomId + ", endpointIndex=" + index);
+        return false;
+      }
+
+      this.metrics.incReconnections();
+      return true;
+
+    } catch (IOException e) {
+      System.err.println("reconnect io error: room=" + roomId + ", endpointIndex=" + index
+          + ", msg=" + e.getMessage());
+      return false;
+    } catch (InterruptedException ignored) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
+  }
 
   public void closeAll() {
     for (ClientWebSocketEndpoint ep : this.endpoints) {
