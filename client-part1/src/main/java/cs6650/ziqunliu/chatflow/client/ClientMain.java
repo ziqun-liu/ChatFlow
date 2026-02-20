@@ -19,11 +19,12 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class ClientMain {
 
   private static final int WARMUP_THREADS = 32;
-  private static final int WARMUP_MSG_PER_THREAD = 1000;
+  private static final int WARMUP_MSG_PER_THREAD = 200;
 
   private static final int TOTAL_MESSAGES = 500_000;
   private static final int NUM_SENDERS = 120;
@@ -32,11 +33,22 @@ public class ClientMain {
   private static final int POOL_SIZE = 5;  // connections per room
   public static final int NUM_ROOMS = 20;
   private static final String WS_URI = "ws://54.148.180.35:8080/server/ws/chat";
-
+  private static ConnectionManager[] managers = null;
+  private static AtomicInteger numberOfMessages = new AtomicInteger();
   public static void main(String[] args) throws Exception {
-    java.util.logging.Logger.getLogger("org.glassfish.tyrus").setLevel(java.util.logging.Level.OFF);
-    runWarmup();
-    runMainPhase();
+    try {
+      Metrics metrics = new Metrics();
+      metrics.start();
+      managers = initManagers(POOL_SIZE, metrics);
+    } catch (Exception e) {
+      throw new RuntimeException("initManagers failed: " + e.getMessage(), e);
+    }
+    if (managers != null) {
+      // java.util.logging.Logger.getLogger("org.glassfish.tyrus").setLevel(java.util.logging.Level.OFF);
+      System.out.println("before warm up");
+      runWarmup();
+      runMainPhase();
+    }
   }
 
   private static void runWarmup() throws InterruptedException {
@@ -62,24 +74,29 @@ public class ClientMain {
 
         try {
           // System.out.println("Thread" + threadId);
-          manager.connectAll();
+          managers[roomId - 1].connectAll();
           System.out.println("After connectAll() " + threadId);
 
-          if (!manager.awaitAllOpen(10, TimeUnit.SECONDS)) {
+          if (!managers[roomId - 1].awaitAllOpen(100, TimeUnit.MILLISECONDS)) {
             System.err.println(
                 "warmup awaitAllOpen timeout: thread=" + threadId + ", room=" + roomId);
             return;
           }
 
           for (int i = 0; i < WARMUP_MSG_PER_THREAD; i++) {
-            // System.out.println("Thread " + threadId + " message " + i);
+            System.out.println("Thread " + threadId + " message " + i);
             ChatMessage msg = MessageGenerator.next();
             msg = new ChatMessage(msg.getUserId(), msg.getUsername(), msg.getMessage(), roomId,
                 msg.getMessageType(), msg.getTimestamp());
 
             try {
-              manager.sendMessage(msg);
+              managers[roomId - 1].sendMessage(msg);
+              numberOfMessages.incrementAndGet();
             } catch (IOException ignored) {
+              System.err.println(
+                  "warmup IO exception: thread=" + threadId + ", room=" + roomId + ", error="
+                      + ignored.getClass().getSimpleName() + ": " + ignored.getMessage());
+              ignored.printStackTrace();
             }
           }
 
@@ -90,7 +107,7 @@ public class ClientMain {
           e.printStackTrace();
 
         } finally {
-          manager.closeAll();
+          //manager.closeAll();
           doneLatch.countDown();
         }
       };
@@ -105,6 +122,7 @@ public class ClientMain {
     warmupPool.awaitTermination(5, TimeUnit.SECONDS);
     System.out.println("WARMUP done.");
     System.out.println(warmupMetrics.summary("WARMUP"));
+    System.out.println("number of messages:" + numberOfMessages.get());
   }
 
   /**
@@ -149,7 +167,14 @@ public class ClientMain {
 
     // Waits for senders to exit (with timeout)
     boolean finished = sendersDoneLatch.await(120, TimeUnit.SECONDS);
-    if (!finished) {
+
+    for (int c = 0; c < managers.length; c++) {
+      //System.out.println("cm index:" + c);
+      if (managers[c] != null) {
+        System.out.println("cm log:" + managers[c].getRoomId() + ":epsessionnull:" +managers[c].epSessionNull.get() + ":epsessionnotopen:" + managers[c].epSessionNotOpen.get())
+        ;
+      }
+    } if (!finished) {
       System.err.println("\n=== ERROR: Senders did not finish within 120 seconds! ===");
       System.err.println("Remaining queue size: " + queue.size());
       System.err.println(metrics.summary("TIMEOUT"));
@@ -158,7 +183,7 @@ public class ClientMain {
     System.out.println("5: All senders completed");
     // Close 20 rooms and their connections
     for (int roomId = 1; roomId <= NUM_ROOMS; roomId++) {
-      managers[roomId].closeAll();
+      managers[roomId - 1].closeAll();
     }
     System.out.println("6");
     metrics.stop();
@@ -174,7 +199,7 @@ public class ClientMain {
    */
   private static ConnectionManager[] initManagers(Integer poolSize, Metrics metrics)
       throws IOException, InterruptedException {
-    ConnectionManager[] managers = new ConnectionManager[NUM_ROOMS + 1];
+    ConnectionManager[] managers = new ConnectionManager[NUM_ROOMS];
 
     System.out.println(
         "Initializing " + NUM_ROOMS + " rooms with " + POOL_SIZE + " connections each (" + (
@@ -182,16 +207,18 @@ public class ClientMain {
 
     // Initialize managers/rooms
     for (int roomId = 1; roomId <= NUM_ROOMS; roomId++) {
-      managers[roomId] = new ConnectionManager(WS_URI + "/" + roomId, POOL_SIZE, metrics);
+      System.out.println("initialazing room id:" + roomId);
+      managers[roomId - 1] = new ConnectionManager(WS_URI + "/" + roomId, POOL_SIZE, metrics);
+      System.out.println("initialzed manager idx:" + (roomId - 1) + ":" + managers[roomId - 1]);
     }
 
     // Connect gradually - room by room to reduce server pressure
     for (int roomId = 1; roomId <= NUM_ROOMS; roomId++) {
       System.out.print("Connecting room " + roomId + "/" + NUM_ROOMS + "...");
-      managers[roomId].connectAll();
+      managers[roomId - 1].connectAll();
 
       // Await this room's connections before moving to next
-      if (!managers[roomId].awaitAllOpen(10, TimeUnit.SECONDS)) {
+      if (!managers[roomId - 1].awaitAllOpen(10, TimeUnit.SECONDS)) {
         throw new IOException("awaitAllOpen timeout: room=" + roomId);
       }
       System.out.println(

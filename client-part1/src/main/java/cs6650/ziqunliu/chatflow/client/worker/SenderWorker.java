@@ -35,7 +35,7 @@ public class SenderWorker implements Runnable {
         
         // Check for POISON pill
         if (msg.getRoomId() == -1) {
-          System.out.println("SenderWorker-" + workerId + ": Received POISON, processed " + messageCount + " messages. Exiting.");
+          // System.out.println("SenderWorker-" + workerId + ": Received POISON, processed " + messageCount + " messages. Exiting.");
           return;
         }
 
@@ -46,7 +46,7 @@ public class SenderWorker implements Runnable {
         }
 
         try {
-          managers[roomId].sendMessage(msg);
+          managers[roomId - 1].sendMessage(msg);
           messageCount++;
           
           // Progress logging for each worker
@@ -61,7 +61,7 @@ public class SenderWorker implements Runnable {
       System.err.println("SenderWorker-" + workerId + ": Interrupted after " + messageCount + " messages");
       Thread.currentThread().interrupt();
     } finally {
-      System.out.println("SenderWorker-" + workerId + ": Finally block, calling doneLatch.countDown()");
+      // System.out.println("SenderWorker-" + workerId + ": Finally block, calling doneLatch.countDown()");
       doneLatch.countDown();
     }
   }

@@ -6,6 +6,7 @@ import java.net.URI;
 import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.websocket.ClientEndpoint;
 import javax.websocket.CloseReason;
 import javax.websocket.ContainerProvider;
@@ -31,6 +32,7 @@ public class ClientWebSocketEndpoint {
   public URI serverUri;
   public volatile Session session;
   public CountDownLatch openLatch = new CountDownLatch(1);
+  public AtomicBoolean isConnected = new AtomicBoolean(false);
 
 
   public ClientWebSocketEndpoint(Metrics metrics, URI serverUri) {
@@ -46,6 +48,8 @@ public class ClientWebSocketEndpoint {
 
       try {
         SHARED_CONTAINER.connectToServer(this, serverUri);
+        this.isConnected.set(true);
+        // System.out.println("SHARED_CONTAINER.connectToServer(serverUri):" + serverUri);
       } catch (DeploymentException e) {
         throw new IOException(e);
       }
@@ -90,12 +94,18 @@ public class ClientWebSocketEndpoint {
 
   @OnError
   public void onError(Session session, Throwable throwable) {
-    System.err.println("ws error [" + serverUri + "]: "
-        + throwable.getClass().getSimpleName() + ": " + throwable.getMessage());
+    System.err.println(
+        "ws error [" + serverUri + "]: " + throwable.getClass().getSimpleName() + ": "
+            + throwable.getMessage());
   }
 
   @OnClose
   public void onClose(Session session, CloseReason closeReason) {
-    this.session = null;
+    if (this.session == session) {
+      this.session = null;
+      System.out.println("  - Session set to null");
+    } else {
+      System.out.println("  - Session NOT set to null (stale callback)");
+    }
   }
 }

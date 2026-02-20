@@ -5,6 +5,7 @@ import com.google.gson.JsonParseException;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import javax.websocket.OnClose;
 import javax.websocket.OnError;
 import javax.websocket.OnMessage;
@@ -24,6 +25,7 @@ public class ServerWebSocketController {
 
   private static final Map<String, Set<Session>> roomSessions = new ConcurrentHashMap<>();
   private static final Gson GSON = new Gson();
+  private static AtomicInteger noOfMessages = new AtomicInteger();
 
   /**
    * If `roomId` does not exist in map, add to map.
@@ -92,6 +94,8 @@ public class ServerWebSocketController {
 
     // Assignment 1: Just echo back to sender, no broadcasting needed
     // Use synchronous send to avoid async buffer overflow
+    noOfMessages.incrementAndGet();
+    System.out.println("number of mesaages:" + noOfMessages.get());
     String payload = GSON.toJson(success);
     if (session.isOpen()) {
       try {

@@ -1,0 +1,22 @@
+1. warm up phase
+   1. reconnections should be zero.
+    connectionsCreated=180, reconnections=148
+   1. more attempts than needed.
+    success=32000, fail=0, attempts=32044, totalProcessed=32000
+1. main phase
+   1. why is this session null
+      if (ep.session == null) {
+
+      }
+
+
+ClientWebsocketEndpoint.onClose()
+  T1: Connection A breaks, triggers onClose(sessionA) - but callback is queued
+  T2: reconnect() creates Connection B, onOpen(sessionB) sets this.session = sessionB
+  T3: The delayed onClose(sessionA) executes
+  T4: Executes this.session = null  ← BUG! Overwrites sessionB!
+  T5: Now this.session is null even though we have a valid connection B
+
+exponential back off in ConnectionManager.sendMessage()
+
+warmup phase closeAll() timing
