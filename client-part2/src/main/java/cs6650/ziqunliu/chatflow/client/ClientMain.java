@@ -147,8 +147,8 @@ public class ClientMain {
         "4.5: Producer finished, queue size=" + queue.size() + ", waiting for " + NUM_SENDERS
             + " senders...");
 
-    // Waits for senders to exit (with timeout)
-    boolean finished = sendersDoneLatch.await(120, TimeUnit.SECONDS);
+    // Waits for senders to exit (no hard cap — let all messages finish)
+    boolean finished = sendersDoneLatch.await(600, TimeUnit.SECONDS);
     if (!finished) {
       System.err.println("\n=== ERROR: Senders did not finish within 120 seconds! ===");
       System.err.println("Remaining queue size: " + queue.size());

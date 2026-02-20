@@ -103,6 +103,7 @@ public class ClientWebSocketEndpoint {
   public void onClose(Session session, CloseReason closeReason) {
     if (this.session == session) {
       this.session = null;
+      this.isConnected.set(false);  // allow reconnect() to re-establish the connection
       System.out.println("  - Session set to null");
     } else {
       System.out.println("  - Session NOT set to null (stale callback)");

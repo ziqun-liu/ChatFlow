@@ -69,9 +69,6 @@ public class ClientMain {
       Runnable task = () -> {
         int roomId = (threadId % NUM_ROOMS) + 1;  // Route 32 threads to 20 rooms
 
-        // Each thread establishes one WebSocket connection
-        ConnectionManager manager = new ConnectionManager(WS_URI + "/" + roomId, 1, warmupMetrics);
-
         try {
           // System.out.println("Thread" + threadId);
           managers[roomId - 1].connectAll();
@@ -165,8 +162,8 @@ public class ClientMain {
         "4.5: Producer finished, queue size=" + queue.size() + ", waiting for " + NUM_SENDERS
             + " senders...");
 
-    // Waits for senders to exit (with timeout)
-    boolean finished = sendersDoneLatch.await(120, TimeUnit.SECONDS);
+    // Waits for senders to exit (no hard cap — let all messages finish)
+    boolean finished = sendersDoneLatch.await(600, TimeUnit.SECONDS);
 
     for (int c = 0; c < managers.length; c++) {
       //System.out.println("cm index:" + c);
