@@ -7,6 +7,9 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -28,6 +31,8 @@ public class ConnectionManager {
   public final AtomicInteger epSessionNotOpen = new AtomicInteger(0);
   private final Integer roomId;
   private final ConcurrentLinkedQueue<ChatMessage> failedMessages = new ConcurrentLinkedQueue<>();
+  /** One lock per endpoint so only one thread reconnects a given endpoint at a time. */
+  private final Object[] reconnectLocks;
 
   public ConnectionManager(String wsUri, int poolSize, Metrics metrics) {
     if (wsUri.endsWith("/")) {
@@ -40,20 +45,50 @@ public class ConnectionManager {
     int rid = Integer.parseInt(wsUri.substring(wsUri.lastIndexOf('/') + 1));
     this.roomId = rid;
 
-    // poolSize is number of connections. Each connection
+    this.reconnectLocks = new Object[poolSize];
+    for (int i = 0; i < poolSize; i++) {
+      this.reconnectLocks[i] = new Object();
+    }
+
     URI uri = URI.create(wsUri);
     for (int connectionId = 0; connectionId < poolSize; connectionId++) {
       this.endpoints.add(new ClientWebSocketEndpoint(metrics, uri));
     }
   }
 
+  /**
+   * Establish all connections in this pool. Uses a small thread pool to connect in parallel
+   * so one slow connection doesn't make the whole room (e.g. room 20) take 5x longer.
+   */
   public void connectAll() throws IOException {
-    for (ClientWebSocketEndpoint ep : this.endpoints) {
+    ExecutorService connectPool = Executors.newFixedThreadPool(poolSize);
+    CountDownLatch done = new CountDownLatch(poolSize);
+    IOException[] firstError = new IOException[1];
 
-      if (ep.isConnected.get() == false) {
-        System.out.println("in connect all: trying to connect:" + ep);
-        ep.connect();
-      }
+    for (ClientWebSocketEndpoint ep : this.endpoints) {
+      connectPool.submit(() -> {
+        try {
+          if (!ep.isConnected.get()) {
+            ep.connect();
+          }
+          done.countDown();
+        } catch (IOException e) {
+          synchronized (firstError) {
+            if (firstError[0] == null) firstError[0] = e;
+          }
+          done.countDown();
+        }
+      });
+    }
+    try {
+      boolean ok = done.await(15, TimeUnit.SECONDS);
+      connectPool.shutdownNow();
+      connectPool.awaitTermination(2, TimeUnit.SECONDS);
+      if (firstError[0] != null) throw firstError[0];
+      if (!ok) throw new IOException("connectAll: timeout waiting for connections");
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IOException("connectAll interrupted", e);
     }
   }
 
@@ -85,17 +120,16 @@ public class ConnectionManager {
       try {  // Try to connect and send
         ClientWebSocketEndpoint ep = this.endpoints.get(index);
 
-        // Graceful connection handling: reconnect if disconnected
+        // session is null when the connection was closed: onClose() set it. Who closed: server (timeout/error), us (reconnect close), or network.
         if (ep.session == null || !ep.session.isOpen()) {
-          System.out.println("Trying to reconnect: " + roomId + ":index:" + index);
-          if (ep.session == null) {
-            epSessionNull.incrementAndGet();
-          } else if (!ep.session.isOpen()) {
-            epSessionNotOpen.incrementAndGet();
-          }
-          boolean ok = reconnect(index);
-          if (!ok) {
-            throw new IOException("Reconnect failed");
+          if (ep.session == null) epSessionNull.incrementAndGet();
+          else epSessionNotOpen.incrementAndGet();
+          synchronized (reconnectLocks[index]) {
+            ep = this.endpoints.get(index);
+            if (ep.session == null || !ep.session.isOpen()) {
+              boolean ok = reconnect(index);
+              if (!ok) throw new IOException("Reconnect failed");
+            }
           }
         }
 
@@ -138,24 +172,15 @@ public class ConnectionManager {
   private boolean reconnect(int index) {
     try {
       ClientWebSocketEndpoint ep = this.endpoints.get(index);
-      System.out.println("DEBUG reconnect: room=" + roomId + ", index=" + index + 
-                       ", ep=" + (ep == null ? "NULL" : "not null") +
-                       ", session before=" + (ep.session == null ? "NULL" : ep.session.getId()));
-      if (ep.isConnected.get() == false) {
-        ep.connect();
-        boolean opened = ep.awaitOpen(100, TimeUnit.MILLISECONDS);
-        System.out.println("DEBUG reconnect: awaitOpen returned " + opened +
-            ", session after=" + (ep.session == null ? "NULL" : ep.session.getId()));
-
-        if (!opened) {
-          System.err.println("reconnect timeout: room=" + roomId + ", endpointIndex=" + index);
-          return false;
-        }
-
-        this.metrics.incReconnections();
-        return true;
+      ep.close();
+      ep.connect();
+      boolean opened = ep.awaitOpen(1, TimeUnit.SECONDS);
+      if (!opened) {
+        System.err.println("reconnect timeout: room=" + roomId + ", endpointIndex=" + index);
+        return false;
       }
-      return false;
+      this.metrics.incReconnections();
+      return true;
     } catch (IOException e) {
       System.err.println(
           "reconnect io error: room=" + roomId + ", endpointIndex=" + index + ", msg="
@@ -169,7 +194,7 @@ public class ConnectionManager {
 
   public void closeAll() {
     for (ClientWebSocketEndpoint ep : this.endpoints) {
-      //ep.close();
+      ep.close();
     }
   }
 
