@@ -41,15 +41,15 @@ public class ClientWebSocketEndpoint {
   }
 
   public void connect() throws IOException {
-    // Use lock to ensure only one thread is connecting at one moment
     synchronized (connectLock) {
-      // Every reconnection instantiates a new CountDownLatch
+      close();  // close any existing session so we don't leave orphaned connections
+      this.session = null;
+      this.isConnected.set(false);
       this.openLatch = new CountDownLatch(1);
 
       try {
         SHARED_CONTAINER.connectToServer(this, serverUri);
         this.isConnected.set(true);
-        // System.out.println("SHARED_CONTAINER.connectToServer(serverUri):" + serverUri);
       } catch (DeploymentException e) {
         throw new IOException(e);
       }
@@ -94,19 +94,20 @@ public class ClientWebSocketEndpoint {
 
   @OnError
   public void onError(Session session, Throwable throwable) {
-    System.err.println(
-        "ws error [" + serverUri + "]: " + throwable.getClass().getSimpleName() + ": "
-            + throwable.getMessage());
+    if (throwable == null) return;
+    String msg = throwable.getMessage();
+    if (msg != null && (msg.contains("Broken pipe") || msg.contains("Connection reset") || msg.contains("EOF"))) return;
+    if ("EOFException".equals(throwable.getClass().getSimpleName())) return;
+    if (throwable.getCause() != null && (throwable.getCause().getMessage() != null && throwable.getCause().getMessage().contains("Broken pipe"))) return;
+    System.err.println("ws error [" + serverUri + "]: " + throwable.getClass().getSimpleName() + ": " + msg);
   }
 
   @OnClose
   public void onClose(Session session, CloseReason closeReason) {
     if (this.session == session) {
       this.session = null;
-      this.isConnected.set(false);  // allow reconnect() to re-establish the connection
-      System.out.println("  - Session set to null");
-    } else {
-      System.out.println("  - Session NOT set to null (stale callback)");
+      this.isConnected.set(false);
     }
+    // else: stale callback (old session closed after we already reconnected), ignore
   }
 }
