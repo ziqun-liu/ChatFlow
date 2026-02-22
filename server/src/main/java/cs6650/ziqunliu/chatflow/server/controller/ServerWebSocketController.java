@@ -36,12 +36,12 @@ public class ServerWebSocketController {
    */
   @OnOpen
   public void onOpen(Session session, @PathParam("roomId") String roomId) throws IOException {
+    session.setMaxIdleTimeout(0);  // don't close connections for idle; client sends continuously
     Set<Session> sessions = roomSessions.computeIfAbsent(roomId,
         k -> ConcurrentHashMap.newKeySet());
     sessions.add(session);
-
-    // Print onto console
-    System.out.println("joined room " + roomId + ", sessionId=" + session.getId());
+    // Log: connection opened (for debug: who connects)
+    System.out.println("[WS] open  room=" + roomId + " sessionId=" + session.getId() + " totalInRoom=" + sessions.size());
 
     // Send message
     RemoteEndpoint.Async asyncRemoteEndpoint = session.getAsyncRemote();
@@ -93,17 +93,32 @@ public class ServerWebSocketController {
         dto.getMessageType().name());
 
     // Assignment 1: Just echo back to sender, no broadcasting needed
-    // Use synchronous send to avoid async buffer overflow
-    noOfMessages.incrementAndGet();
-    System.out.println("number of mesaages:" + noOfMessages.get());
+    long n = noOfMessages.incrementAndGet();
+    // Log every 50k messages to avoid flood at high throughput
+    if (n % 50_000 == 0) {
+      System.out.println("[WS] messages total=" + n);
+    }
     String payload = GSON.toJson(success);
-    if (session.isOpen()) {
-      try {
-        session.getBasicRemote().sendText(payload);  // Synchronous send
-      } catch (IOException e) {
+    try {
+      if (session.isOpen()) {
+        session.getBasicRemote().sendText(payload);
+      }
+    } catch (IOException e) {
+      // Client often already closed (Broken pipe / Connection reset). Normal at shutdown or under load.
+      if (!isClientGone(e)) {
         System.err.println("Failed to send response: " + e.getMessage());
       }
     }
+  }
+
+  /** True if error is due to client having closed the connection (do not log full stack). */
+  private static boolean isClientGone(Throwable t) {
+    if (t == null) return false;
+    String msg = t.getMessage();
+    if (msg != null && (msg.contains("Broken pipe") || msg.contains("Connection reset") || msg.contains("EOF"))) return true;
+    if ("EOFException".equals(t.getClass().getSimpleName())) return true;
+    if (t.getCause() != null) return isClientGone(t.getCause());
+    return false;
   }
 
   /**
@@ -115,6 +130,9 @@ public class ServerWebSocketController {
     Set<Session> sessions = roomSessions.get(roomId);
     if (sessions != null) {
       sessions.remove(session);
+      int remaining = sessions.size();
+      // Log: connection closed (for debug: who disconnects, client or server side)
+      System.out.println("[WS] close room=" + roomId + " sessionId=" + session.getId() + " remainingInRoom=" + remaining);
       if (sessions.isEmpty()) {
         roomSessions.remove(roomId);
       }
@@ -123,11 +141,14 @@ public class ServerWebSocketController {
 
   @OnError
   public void onError(Session session, Throwable error) {
-    String id = (session != null) ? session.getId() : "null";
-    System.err.println("WS error, sessionId=" + id);
-    if (error != null) {
-      error.printStackTrace();
+    if (error == null) return;
+    // Avoid full stack trace for normal "client disconnected" errors (noise in logs)
+    if (isClientGone(error)) {
+      return; // or: System.err.println("WS client gone, sessionId=" + (session != null ? session.getId() : "null"));
     }
+    String id = (session != null) ? session.getId() : "null";
+    System.err.println("WS error, sessionId=" + id + ": " + error.getMessage());
+    error.printStackTrace();
   }
 
   private void message(Session session, String content) {

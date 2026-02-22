@@ -1,5 +1,4 @@
 .idea/
 .DS_Store
 tomcat-users.xml.backup
-pom.xml
 target/

@@ -32,7 +32,8 @@ public class ClientMain {
 
   private static final int POOL_SIZE = 5;  // connections per room
   public static final int NUM_ROOMS = 20;
-  private static final String WS_URI = "ws://54.148.180.35:8080/server/ws/chat";
+  // Use localhost when server runs locally; use ws://YOUR_SERVER:8080/server/ws/chat for remote
+  private static final String WS_URI = "ws://localhost:8080/server/ws/chat";
   private static ConnectionManager[] managers = null;
   private static AtomicInteger numberOfMessages = new AtomicInteger();
   public static void main(String[] args) throws Exception {
@@ -104,7 +105,7 @@ public class ClientMain {
           e.printStackTrace();
 
         } finally {
-          //manager.closeAll();
+          managers[roomId - 1].closeAll();
           doneLatch.countDown();
         }
       };
@@ -117,6 +118,10 @@ public class ClientMain {
 
     warmupPool.shutdownNow();
     warmupPool.awaitTermination(5, TimeUnit.SECONDS);
+    // Close warmup connections so we don't hold 100 extra connections during main phase
+    for (int r = 0; r < NUM_ROOMS; r++) {
+      if (managers[r] != null) managers[r].closeAll();
+    }
     System.out.println("WARMUP done.");
     System.out.println(warmupMetrics.summary("WARMUP"));
     System.out.println("number of messages:" + numberOfMessages.get());
@@ -211,6 +216,7 @@ public class ClientMain {
 
     // Connect gradually - room by room to reduce server pressure
     for (int roomId = 1; roomId <= NUM_ROOMS; roomId++) {
+      long t0 = System.nanoTime();
       System.out.print("Connecting room " + roomId + "/" + NUM_ROOMS + "...");
       managers[roomId - 1].connectAll();
 
@@ -218,8 +224,9 @@ public class ClientMain {
       if (!managers[roomId - 1].awaitAllOpen(10, TimeUnit.SECONDS)) {
         throw new IOException("awaitAllOpen timeout: room=" + roomId);
       }
+      long ms = (System.nanoTime() - t0) / 1_000_000;
       System.out.println(
-          " ✓ (" + (roomId * POOL_SIZE) + "/" + (NUM_ROOMS * POOL_SIZE) + " total connections)");
+          " ✓ (" + (roomId * POOL_SIZE) + "/" + (NUM_ROOMS * POOL_SIZE) + " total, " + ms + "ms)");
 
       // Small delay between rooms to reduce server pressure
       if (roomId < NUM_ROOMS) {
